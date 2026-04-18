@@ -54,7 +54,9 @@ def sanitize_filename(name: str) -> str:
 
 
 def load_json(path):
-    with open(path, "r") as f:
+    # Explicit utf-8: Windows default is GBK on Chinese locale, which blows up on
+    # Screen Studio's project.json (contains emoji / non-ASCII names).
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
