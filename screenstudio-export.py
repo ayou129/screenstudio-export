@@ -15,8 +15,8 @@ Usage:
 Options:
   -o, --output FILE       Output file path (default: <project-name>.mp4)
   --fps N                 Output frame rate (default: 60)
-  --width N               Output width (default: 1920)
-  --height N              Output height (default: 1080)
+  --width N               Output width (default: source width from project)
+  --height N              Output height (default: source height from project)
   --deadzone N            Follow-mode deadzone in pixels (default: 160)
   --blur-subframes N      Motion blur sub-frames, 1=off (default: 7)
   --bitrate STR           Video bitrate (default: 12M)
@@ -124,8 +124,10 @@ def parse_args():
     p.add_argument("project", type=Path, help="Path to .screenstudio project directory")
     p.add_argument("-o", "--output", type=Path, default=None, help="Output MP4 path")
     p.add_argument("--fps", type=int, default=60, help="Output FPS (default: 60)")
-    p.add_argument("--width", type=int, default=1920, help="Output width (default: 1920)")
-    p.add_argument("--height", type=int, default=1080, help="Output height (default: 1080)")
+    p.add_argument("--width", type=int, default=None,
+                   help="Output width (default: source width from project bounds)")
+    p.add_argument("--height", type=int, default=None,
+                   help="Output height (default: source height from project bounds)")
     p.add_argument("--deadzone", type=int, default=160, help="Follow-mode deadzone px (default: 160)")
     p.add_argument("--blur-subframes", type=int, default=7, help="Motion blur sub-frames (default: 7)")
     p.add_argument("--bitrate", type=str, default="12M", help="Video bitrate (default: 12M)")
@@ -272,6 +274,12 @@ class ScreenStudioProject:
 
         # Source resolution from first display session
         self._load_sessions()
+        # Resolve output resolution defaults: if --width/--height not given,
+        # fall back to source bounds (snapped to even for 4:2:0).
+        if self.args.width is None:
+            self.args.width = self.source_width & ~1
+        if self.args.height is None:
+            self.args.height = self.source_height & ~1
         self._load_mouse_data()
         self._load_cursors()
         self._build_timeline()
@@ -629,38 +637,44 @@ class Renderer:
     def render_viewport_yuv(self, src, vp):
         """Crop a viewport region out of a source YUV420p frame and resize to output.
         src: tuple(Y, U, V) — planes at source dimensions.
-        Returns (Y, U, V) at output dimensions."""
+        Returns (Y, U, V) at output dimensions.
+
+        Sub-pixel precision via warpAffine: spring physics produces fractional
+        viewport coords that change by <1 px per frame. Integer-snapping them
+        quantizes motion into 1–2 px jumps that look like judder when upscaled
+        to 1080p, especially during zoom-in. warpAffine samples from source with
+        a fractional affine transform, so the animation is smooth.
+        """
         y_src, u_src, v_src = src
         SW, SH = self.proj.source_width, self.proj.source_height
         cx, cy, cw, ch = vp
-        cx = max(0.0, cx); cy = max(0.0, cy)
-        cw = max(100.0, min(cw, SW - cx))
-        ch = max(100.0, min(ch, SH - cy))
-        # Snap to even (required for 4:2:0)
-        ix = int(cx) & ~1
-        iy = int(cy) & ~1
-        iw = max(2, int(cw) & ~1)
-        ih = max(2, int(ch) & ~1)
-        if ix + iw > SW: iw = (SW - ix) & ~1
-        if iy + ih > SH: ih = (SH - iy) & ~1
-        if iw < 2 or ih < 2:
-            return (np.zeros((self.out_h, self.out_w), dtype=np.uint8),
-                    np.full((self.out_h_h, self.out_w_h), 128, dtype=np.uint8),
-                    np.full((self.out_h_h, self.out_w_h), 128, dtype=np.uint8))
+        cx = max(0.0, min(float(cx), SW - 2.0))
+        cy = max(0.0, min(float(cy), SH - 2.0))
+        cw = max(2.0, min(float(cw), SW - cx))
+        ch = max(2.0, min(float(ch), SH - cy))
 
-        y_crop = y_src[iy:iy + ih, ix:ix + iw]
-        u_crop = u_src[iy // 2:(iy + ih) // 2, ix // 2:(ix + iw) // 2]
-        v_crop = v_src[iy // 2:(iy + ih) // 2, ix // 2:(ix + iw) // 2]
+        sx = cw / self.out_w
+        sy = ch / self.out_h
 
-        # Pick interpolation per direction. LANCZOS4 for upscale = sharper text;
-        # AREA for downscale = best-quality downsample.
-        if iw >= self.out_w and ih >= self.out_h:
-            interp = cv2.INTER_AREA
+        # warpAffine doesn't support INTER_AREA. For downscale use CUBIC
+        # (decent + fast); for upscale use LANCZOS4 (sharp text).
+        if sx >= 1.0 and sy >= 1.0:
+            interp = cv2.INTER_CUBIC
         else:
             interp = cv2.INTER_LANCZOS4
-        y_out = cv2.resize(y_crop, (self.out_w, self.out_h), interpolation=interp)
-        u_out = cv2.resize(u_crop, (self.out_w_h, self.out_h_h), interpolation=interp)
-        v_out = cv2.resize(v_crop, (self.out_w_h, self.out_h_h), interpolation=interp)
+        flags = interp | cv2.WARP_INVERSE_MAP
+
+        M_y = np.array([[sx, 0.0, cx], [0.0, sy, cy]], dtype=np.float32)
+        y_out = cv2.warpAffine(y_src, M_y, (self.out_w, self.out_h),
+                               flags=flags, borderMode=cv2.BORDER_REPLICATE)
+
+        # U/V planes are half-res in both source and output, so scale factor is
+        # unchanged; only translation halves.
+        M_uv = np.array([[sx, 0.0, cx * 0.5], [0.0, sy, cy * 0.5]], dtype=np.float32)
+        u_out = cv2.warpAffine(u_src, M_uv, (self.out_w_h, self.out_h_h),
+                               flags=flags, borderMode=cv2.BORDER_REPLICATE)
+        v_out = cv2.warpAffine(v_src, M_uv, (self.out_w_h, self.out_h_h),
+                               flags=flags, borderMode=cv2.BORDER_REPLICATE)
         return (y_out, u_out, v_out)
 
     def blit_cursor_yuv(self, y, u, v, cursor, px, py):
