@@ -97,7 +97,7 @@ pip install -r requirements.txt
 
 ```bash
 # 基本用法 — 自动输出到项目同级目录
-python screenstudio-export.py "我的录制.screenstudio"
+python screenstudio-export.py "E:\ScreenStudio\Built-in Retina Display 2026-04-18 135854.screenstudio"  --nvenc --nvdec --workers 4
 
 # 指定输出路径和分辨率
 python screenstudio-export.py "我的录制.screenstudio" -o output.mp4 --width 1920 --height 1080
