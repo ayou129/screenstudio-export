@@ -103,6 +103,7 @@ python screenstudio-export.py "E:\ScreenStudio\第三期-001.screenstudio"  --nv
 python screenstudio-export.py "E:\ScreenStudio\第三期-005.screenstudio"  --nvenc --nvdec --workers 8
 python screenstudio-export.py "E:\ScreenStudio\第三期-核验最终功能.screenstudio"  --nvenc --nvdec --workers 8
 python screenstudio-export.py "E:\ScreenStudio\第三期-最终决策-预览.screenstudio"  --nvenc --nvdec --workers 8
+python screenstudio-export.py "E:\ScreenStudio\第三期-素材NotebookLM.screenstudio"  --nvenc --nvdec --workers 8
 
 # 指定输出路径和分辨率
 python screenstudio-export.py "我的录制.screenstudio" -o output.mp4 --width 1920 --height 1080
